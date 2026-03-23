@@ -109,13 +109,14 @@ println(pooled)
 Using `miceforest` for chained equations and `statsmodels` for estimation.
 
 ```python
+
 import pandas as pd
 import miceforest as mf
 import statsmodels.api as sm
 import numpy as np
 
 data = pd.DataFrame({
-    'id': list(range(1, 21)),
+    'id': range(1, 21),
     'wage': [22, 18, 25, 20, 27, 19, 24, 21, 28, 23, 17, 26, 22, 20, 29, 18, 27, 21, 30, 24],
     'educ': [16, 14, np.nan, 13, 17, np.nan, 16, 15, 18, np.nan, 12, 17, 15, np.nan, 19, 13, 17, 14, 20, np.nan],
     'exper': [5, 3, 7, 4, 8, 6, 9, 5, 10, 7, 2, 8, 4, 5, 11, 3, 9, 4, 12, 6],
@@ -125,17 +126,44 @@ data = pd.DataFrame({
 kernel = mf.ImputationKernel(data, num_datasets=5, random_state=123)
 kernel.mice(5)
 
-models = []
-for i in range(kernel.dataset_count()):
+coefs = []
+vars_ = []
+
+for i in range(kernel.num_datasets):
     comp = kernel.complete_data(dataset=i)
     X = sm.add_constant(comp[['educ', 'exper', 'female']])
     y = comp['wage']
     model = sm.OLS(y, X).fit()
-    models.append(model)
+    coefs.append(model.params.values)
+    vars_.append(model.cov_params().values)
 
-# Example: average coefficients (full Rubin's rules requires combining variances as well)
-pooled_coefs = np.mean([m.params for m in models], axis=0)
-print(pooled_coefs)
+coefs = np.array(coefs)      # shape: (m, k)
+vars_ = np.array(vars_)      # shape: (m, k, k)
+
+m = coefs.shape[0]
+
+# Pooled coefficient vector
+pooled_coefs = np.mean(coefs, axis=0)
+
+# Within-imputation variance
+within_var = np.mean(vars_, axis=0)
+
+# Between-imputation variance
+between_var = np.cov(coefs, rowvar=False, ddof=1)
+
+# Rubin's Rules total variance
+pooled_var = within_var + (1 + 1/m) * between_var
+
+# Standard errors
+pooled_se = np.sqrt(np.diag(pooled_var))
+
+results = pd.DataFrame({
+    'coef': pooled_coefs,
+    'se': pooled_se,
+    't': pooled_coefs / pooled_se
+}, index=['const', 'educ', 'exper', 'female'])
+
+print(results)
 ```
 
 ---
@@ -145,6 +173,7 @@ print(pooled_coefs)
 The key step is to estimate the model across all imputations and pool results using Rubin's rules.
 
 ```r
+install.packages("mice")
 library(mice)
 
 data <- data.frame(
